@@ -4,7 +4,7 @@ import os
 from bs4 import BeautifulSoup
 from collections import Counter
 import pandas as pd
-
+import re
 
 def text_normalize(input_text):
     return(input_text.lower().replace("\xad", ""))
@@ -66,6 +66,13 @@ def search_document(query, document):
                         _document_score += 1
                         _paragraph_catch.append({"label": altkw["label"], "form" : kw})
                         _document_catch.append({"label": altkw["label"], "form" : kw})
+
+        elif "regex" in query:
+            for m in re.finditer(query["regex"], paragraph["text"]):
+                _paragraph_score += 1
+                _document_score += 1
+                _paragraph_catch.append(m.group(0))
+                _document_catch.append(m.group(0))
 
 
         if len(_paragraph_catch) > 0:
@@ -133,19 +140,35 @@ def query_keywordlist(kwlist):
         ]
     })
 
-def transform_excerpt(excerpt, query):
+def query_regex(regex_str):
+    return({
+        "regex" : regex_str
+    })
+
+
+def transform_excerpt(excerpt, transform_map):
     _output = excerpt
-    if "keyword_list" in query:
-        for kw in query["keyword_list"]:
-            _output = _output.replace(kw, "**{}**".format(kw))
-    elif "alternatives_list" in query:
-        for altkw in query["alternatives_list"]:
-            for kw in altkw["forms"]:
-                _output = _output.replace(kw, "**{}**".format(kw))
+    for k in transform_map:
+        _output = _output.replace(k, transform_map[k])
+
     return(_output)
 
 def result_markdown_formater(query, results):
     _output = []
+
+
+    if "regex" in query:
+        _output.append("## All occurences\n\n")
+        _output.append("| occ | expression |\n| :-- | :-- |\n")
+        _catchall = []
+        for result in results:
+            _catchall.extend(result["catch"])
+        _catchall_counter = Counter(_catchall)
+
+        for c in _catchall_counter.most_common():
+            _output.append("| {1} | {0} |\n".format(c[0].replace("\n",""), c[1]))
+
+        _output.append("\n\n")
 
     for result in results:
         _output.append("#### {doc_id} - {title} [[link]({url})]\n".format(
@@ -166,6 +189,7 @@ def result_markdown_formater(query, results):
                 else:
                     _suboutput.append("~~[{}]~~".format(kw))
             _output.append(", ".join(_suboutput))
+
         elif "alternatives_list" in query:
             _output.append("Matches(d={},o={}): ".format(len(set([entry["label"] for entry in result["catch"]])),
                                                      len(result["catch"])))
@@ -179,14 +203,28 @@ def result_markdown_formater(query, results):
 
             _output.append(", ".join(_suboutput))
 
+        elif "regex" in query:
+            _output.append("Matches(o={}): \n".format(len(result["catch"])))
+            _catches = Counter(result["catch"])
+            for c in _catches:
+                _output.append("> [o={1}] {0}\n\n".format(c.replace("\n",""), _catches[c]))
+
         _output.append("\n")
         _output.append("\n")
 
         for paragraph in result["paragraphs"]:
             # todo: id
-
             _output.append("**Paragraph {}**\n> ".format(paragraph["ids"]))
-            _output.append(transform_excerpt(paragraph["excerpt"], query))
+            if "alternatives_list" in query:
+                excerpt_transform_map = dict(
+                    [(c['form'],"**{}**".format(c['form'])) for c in paragraph['catch']]
+                )
+            else:
+                excerpt_transform_map = dict(
+                    [(c,"**{}**".format(c)) for c in paragraph['catch']]
+                )
+
+            _output.append(transform_excerpt(paragraph["excerpt"], excerpt_transform_map))
             _output.append("\n\n")
 
         _output.append("\n")
@@ -206,16 +244,23 @@ def collect_matika_cooccurences_counter(results):
                     counts.update([(k1["label"],k2["label"]), (k2["label"],k1["label"])])
     return(counts)
 
-def collect_matika_cooccurences_pivot(results):
+def collect_matika_cooccurences_pivot(results, transform=None, normalize=None):
     cooccurences = collect_matika_cooccurences_counter(results)
 
-    df = pd.DataFrame.from_records([(key[0],key[1],cooccurences[key]) for key in cooccurences],
-                                    columns=["word1", "word2", "cooccurence"])
+    if transform == None:
+        df = pd.DataFrame.from_records([(key[0],key[1],cooccurences[key]) for key in cooccurences],
+                                        columns=["word1", "word2", "score"])
+    else:
+        df = pd.DataFrame.from_records([(key[0],key[1],transform(cooccurences[key])) for key in cooccurences],
+                                        columns=["word1", "word2", "score"])
+
+    if normalize == "minmax":
+        df['score'] = (df['score'] - df['score'].min()) / (df['score'].max() - df['score'].min())
 
     return (df.pivot(index="word1",
                      columns="word2",
-                     values="cooccurence")
-            .fillna(0))
+                     values="score")
+                     .fillna(0))
 
 if __name__ == '__main__':
     _rootdir = "/home/datayana/suttacentral-data/text/pi/su"
