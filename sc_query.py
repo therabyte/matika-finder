@@ -71,8 +71,14 @@ def search_document(query, document):
             for m in re.finditer(query["regex"], paragraph["text"]):
                 _paragraph_score += 1
                 _document_score += 1
-                _paragraph_catch.append(m.group(0))
-                _document_catch.append(m.group(0))
+                if query.get("group_map", None) != None:
+                    _catch = {}
+                    for k in query["group_map"]:
+                        _catch[query["group_map"][k]] = m.group(k)
+                else:
+                    _catch = { '*' : m.group(0) }
+                _paragraph_catch.append(_catch)
+                _document_catch.append(_catch)
 
 
         if len(_paragraph_catch) > 0:
@@ -140,9 +146,10 @@ def query_keywordlist(kwlist):
         ]
     })
 
-def query_regex(regex_str):
+def query_regex(regex_str, group_map = None):
     return({
-        "regex" : regex_str
+        "regex" : regex_str,
+        "group_map" : group_map
     })
 
 
@@ -158,17 +165,33 @@ def result_markdown_formater(query, results):
 
 
     if "regex" in query:
-        _output.append("## All occurences\n\n")
-        _output.append("| occ | expression |\n| :-- | :-- |\n")
-        _catchall = []
-        for result in results:
-            _catchall.extend(result["catch"])
-        _catchall_counter = Counter(_catchall)
+        if query.get("group_map", None) == None:
+            _output.append("## All occurences\n\n")
+            _output.append("| occ | expression |\n| :-- | :-- |\n")
+            _catchall = []
+            for result in results:
+                _catchall.extend([c['*'] for c in result["catch"]])
+            _catchall_counter = Counter(_catchall)
 
-        for c in _catchall_counter.most_common():
-            _output.append("| {1} | {0} |\n".format(c[0].replace("\n",""), c[1]))
+            for c in _catchall_counter.most_common():
+                _output.append("| {1} | {0} |\n".format(c[0].replace("\n",""), c[1]))
+            _output.append("\n\n")
 
-        _output.append("\n\n")
+        else:
+            for k in query.get("group_map"):
+                _groupkey = query["group_map"][k]
+                _output.append("## All occurences of group {}\n\n".format(_groupkey))
+                _output.append("| occ | expression |\n| :-- | :-- |\n")
+                _catchall = []
+                for result in results:
+                    _catchall.extend([c.get(_groupkey,"_") for c in result["catch"]])
+                _catchall_counter = Counter(_catchall)
+
+                for c in _catchall_counter.most_common():
+                    _output.append("| {1} | {0} |\n".format(c[0].replace("\n",""), c[1]))
+
+                _output.append("\n\n")
+
 
     for result in results:
         _output.append("#### {doc_id} - {title} [[link]({url})]\n".format(
@@ -205,7 +228,7 @@ def result_markdown_formater(query, results):
 
         elif "regex" in query:
             _output.append("Matches(o={}): \n".format(len(result["catch"])))
-            _catches = Counter(result["catch"])
+            _catches = Counter([c['*'] for c in result["catch"]])
             for c in _catches:
                 _output.append("> [o={1}] {0}\n\n".format(c.replace("\n",""), _catches[c]))
 
@@ -218,6 +241,13 @@ def result_markdown_formater(query, results):
             if "alternatives_list" in query:
                 excerpt_transform_map = dict(
                     [(c['form'],"**{}**".format(c['form'])) for c in paragraph['catch']]
+                )
+            elif "regex" in query:
+                excerpt_transform_map = dict(
+                    [
+                        (c['*'],"**{}**".format(c['*']))
+                        for c in paragraph['catch']
+                    ]
                 )
             else:
                 excerpt_transform_map = dict(
