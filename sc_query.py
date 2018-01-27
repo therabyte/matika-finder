@@ -6,6 +6,11 @@ from collections import Counter
 import pandas as pd
 import re
 
+
+###################
+# TEXT PROCESSING #
+###################
+
 def text_normalize(input_text):
     return(input_text.lower().replace("\xad", ""))
 
@@ -41,117 +46,316 @@ def parse_html_dom(input_html_content):
     return(document)
 
 
-def search_document(query, document):
-    _paragraph_results = []
+#################
+# CORPUS/ENGINE #
+#################
 
-    _document_score = 0
-    _document_catch = []
-    for paragraph in document["dom"]["paragraphs"]:
-        _paragraph_score = 0
-        _paragraph_catch = []
+class Corpus():
+    def __init__(self):
+        self.documents = []
 
-        if "keyword_list" in query:
-            for kw in query["keyword_list"]:
-                if kw in paragraph["text"]:
-                    _paragraph_score += 1
-                    _document_score += 1
-                    _paragraph_catch.append(kw)
-                    _document_catch.append(kw)
+    def load_suttacentral(self, rootdir):
+        for root, subFolders, files in os.walk(rootdir):
+            #print("{} // {} // {}".format(root,subFolders,files))
+            for filename in files:
+                if filename.endswith(".html"):
+                    _html_files_entry = {
+                        "relative_root" : root[len(rootdir):],
+                        "file_name" : filename,
+                        "file_absolute_path" : "{}/{}".format(root,filename)
+                    }
 
-        elif "alternatives_list" in query:
-            for altkw in query["alternatives_list"]:
-                for kw in altkw["forms"]:
-                    if kw in paragraph["text"]:
-                        _paragraph_score += 1
-                        _document_score += 1
-                        _paragraph_catch.append({"label": altkw["label"], "form" : kw})
-                        _document_catch.append({"label": altkw["label"], "form" : kw})
+                    with open(_html_files_entry["file_absolute_path"]) as ifile:
+                        _html_files_entry["html_content"] = ifile.read()
+                    _html_files_entry["dom"] = parse_html_dom(_html_files_entry["html_content"])
+                    self.documents.append(_html_files_entry)
 
-        elif "regex" in query:
-            for m in re.finditer(query["regex"], paragraph["text"]):
-                _paragraph_score += 1
-                _document_score += 1
-                if query.get("group_map", None) != None:
-                    _catch = {}
-                    for k in query["group_map"]:
-                        _catch[query["group_map"][k]] = m.group(k)
-                else:
-                    _catch = { '*' : m.group(0) }
-                _paragraph_catch.append(_catch)
-                _document_catch.append(_catch)
+    def count(self):
+        return((len(self.documents), sum([len(entry["html_content"]) for entry in self.documents])))
+
+    def search(self, query, sort=None):
+        results = SearchResultList()
+        for doc in self.documents:
+            s = query.search(doc)
+            if s:
+                results.append(s)
+
+        results.sort_by(sort)
+        return(results)
 
 
-        if len(_paragraph_catch) > 0:
-            _result_entry = {
-                "doc_reference" : document["file_absolute_path"],
-                "type" : "paragraph",
-                "excerpt" : paragraph["text"],
-                "score" : _paragraph_score,
-                "catch" : _paragraph_catch,
-                "ids" : paragraph.get("ids", [])
+##################
+# SEARCH RESULTS #
+##################
+
+class SearchResultList():
+    def __init__(self):
+        self.results = []
+
+    def sort_by(self, keystr):
+        if keystr == 'score':
+            self.results = sorted(self.results, key=lambda el : el.score('score'))
+        if keystr == 'catch':
+            self.results = sorted(self.results, key=lambda el : el.score('catch'))
+
+    def iterate(self):
+        for r in self.results:
+            yield r
+
+    def append(self, result):
+
+        self.results.append(result)
+
+    def extend(self, resultb):
+        self.results.extend(resultb.results)
+
+    def subset(self, id_regexp):
+        ret = SearchResultList()
+        for result in self.results:
+            if re.match(id_regexp, result.id):
+                ret.results.append(result)
+        return(ret)
+
+    def __len__(self):
+        return(len(self.results))
+
+
+    def get_all_labels(self, group='*'):
+        occurences = []
+
+        for result in self.results:
+            for c in result.document_catches:
+                # label group form
+                if c[1] == group:
+                    occurences.append(c[0])
+
+        return(Counter(occurences).most_common())
+
+
+    def get_labels_cooccurences(self, group='*', level='paragraph'):
+        counts = Counter()
+
+        for result in self.results:
+            for r in result.paragraph_results:
+                for k1 in r["catches"]:
+                    for k2 in r["catches"]:
+                        if k2[0] == k1[0]:
+                            continue
+                        counts.update([(k1[0],k2[0]), (k2[0],k1[0])])
+        return(counts)
+
+    def cooccurence_pivot(self, group='*', level='paragraph', transform=None, normalize=None):
+        cooccurences = self.get_labels_cooccurences(group, level)
+
+        if transform == None:
+            df = pd.DataFrame.from_records([(key[0],key[1],cooccurences[key]) for key in cooccurences],
+                                            columns=["word1", "word2", "score"])
+        else:
+            df = pd.DataFrame.from_records([(key[0],key[1],transform(cooccurences[key])) for key in cooccurences],
+                                            columns=["word1", "word2", "score"])
+
+        if normalize == "minmax":
+            df['score'] = (df['score'] - df['score'].min()) / (df['score'].max() - df['score'].min())
+
+        return (df.pivot(index="word1",
+                         columns="word2",
+                         values="score")
+                         .fillna(0))
+
+
+    def get_all_forms(self, group='*'):
+        occurences = []
+
+        for result in self.results:
+            for c in result.document_catches:
+                # label group form
+                if c[1] == group:
+                    occurences.append(c[2])
+
+        return(Counter(occurences).most_common())
+
+    def get_all_docids(self, group='*'):
+        occurences = set()
+        for result in self.results:
+            occurences.add(result.id)
+
+        return(occurences)
+
+
+    def get_all_document_catches(self, group='*', discard_forms=False):
+        occurences = {}
+
+        for result in self.results:
+            for c in result.document_catches:
+                # label group form
+                if c[1] == group:
+                    if discard_forms:
+                        _c = (c[0], c[1], None)
+                    else:
+                        _c = c
+                    if _c in occurences:
+                        occurences[_c].append(result.id)
+                    else:
+                        occurences[_c] = [result.id]
+
+        occurence_list = []
+        for k in occurences:
+            occurence_list.append(
+                (len(occurences[k]), occurences[k], k)
+            )
+
+        return(sorted(occurence_list, key=lambda x : -x[0]))
+
+    def get_all_paragraph_catches(self, group='*', discard_forms=False):
+        occurences = {}
+
+        for result in self.results:
+            for paragraph in result.paragraph_results:
+                # label group form
+                for c in paragraph['catches']:
+                    if c[1] == group:
+                        if discard_forms:
+                            _c = (c[0], c[1], None)
+                        else:
+                            _c = c
+                        if _c in occurences:
+                            occurences[_c].append( (result.id, paragraph.get('ids',None)) )
+                        else:
+                            occurences[_c] = [(result.id, paragraph.get('ids',None))]
+
+        occurence_list = []
+        for k in occurences:
+            occurence_list.append(
+                (len(occurences[k]), occurences[k], k)
+            )
+
+        return(sorted(occurence_list, key=lambda x : -x[0]))
+
+
+class SearchResult():
+    def __init__(self, document):
+        self.type = "document"
+        self.doc_reference = document["file_absolute_path"]
+        self.id = document["dom"].get("id", "none")
+        self.doc_title = document["dom"].get("title", "no title available")
+        self.document_score = 0
+        self.document_catches = []
+        self.paragraph_results = []
+
+    def score(self, which):
+        return self.document_score
+        #elif which == 'catch':
+        #    return (-len(set([entry["label"] for entry in el["catch"]])), -el["score"])
+
+    def add_document_catch(self, document, catch):
+        self.document_score += 1
+        self.document_catches.append(catch)
+
+    def add_paragraph_catch(self, document, paragraph, catch):
+        self.add_document_catch(document, catch)
+        if len(self.paragraph_results) == 0:
+            pc = {
+                        "doc_reference" : document["file_absolute_path"],
+                        "type" : "paragraph",
+                        "excerpt" : paragraph["text"],
+                        "catches" : [catch],
+                        "ids" : paragraph.get("ids", [])
             }
-            _paragraph_results.append(_result_entry)
-
-    results = []
-    if _document_score > 0:
-        results.append({
-                "type" : "document",
-                "doc_reference" : document["file_absolute_path"],
-                "doc_id" : document["dom"].get("id", "none"),
-                "doc_title" : document["dom"].get("title", "no title available"),
-                "score" : _document_score,
-                "catch" : _document_catch,
-                "paragraphs" : _paragraph_results
-            })
-
-    return(results)
-
-def search_documentlist(query, doc_list, sort=None):
-    results = []
-    for doc in doc_list:
-        results.extend(search_document(query, doc))
-
-    if sort == "score":
-        results = sorted(results, key=lambda el : -el['score'])
-    if sort == "catch":
-        results = sorted(results, key=lambda el : (-len(set([entry["label"] for entry in el["catch"]])), -el["score"]))
-
-    return(results)
-
-
-def load_documents(rootdir):
-    documents = []
-
-    for root, subFolders, files in os.walk(rootdir):
-        #print("{} // {} // {}".format(root,subFolders,files))
-        for filename in files:
-            if filename.endswith(".html"):
-                _html_files_entry = {
-                    "relative_root" : root[len(rootdir):],
-                    "file_name" : filename,
-                    "file_absolute_path" : "{}/{}".format(root,filename)
+        else:
+            if self.paragraph_results[-1]['ids'] == paragraph['ids']:
+                pc = self.paragraph_results.pop()
+                pc['catches'].append(catch)
+            else:
+                pc = {
+                            "doc_reference" : document["file_absolute_path"],
+                            "type" : "paragraph",
+                            "excerpt" : paragraph["text"],
+                            "catches" : [catch],
+                            "ids" : paragraph.get("ids", [])
                 }
 
-                with open(_html_files_entry["file_absolute_path"]) as ifile:
-                    _html_files_entry["html_content"] = ifile.read()
-                _html_files_entry["dom"] = parse_html_dom(_html_files_entry["html_content"])
-                documents.append(_html_files_entry)
+        self.paragraph_results.append(pc)
 
-    return(documents)
+    def close(self):
+        if self.document_score > 0:
+            return self
+        else:
+            return None
 
-def query_keywordlist(kwlist):
-    return({
-        "keyword_list" : [
-            text_normalize(kw) for kw in kwlist
-        ]
-    })
 
-def query_regex(regex_str, group_map = None):
-    return({
-        "regex" : regex_str,
-        "group_map" : group_map
-    })
+###########
+# QUERIES #
+###########
 
+class QueryWordList():
+    def __init__(self, kwlist):
+        self.keyword_list = [ text_normalize(kw) for kw in kwlist ]
+
+    def _catch(self, kw):
+        # label group form
+        return( (kw, '*', kw) )
+
+    def search(self, document):
+        result = SearchResult(document)
+
+        for paragraph in document["dom"]["paragraphs"]:
+            for kw in self.keyword_list:
+                if kw in paragraph["text"]:
+                    result.add_paragraph_catch(document, paragraph, self._catch(kw))
+
+        return result.close()   # returns None if nothing caught
+
+
+class QueryAlternatives():
+    def __init__(self):
+        self.alternatives_list = []
+
+    def add_alternative(self, label, forms):
+        self.alternatives_list.append( {"label": label, "forms": forms} )
+
+    def _catch(self, label, form):
+        # label group form
+        return( (label, '*', form) )
+
+    def search(self, document):
+        result = SearchResult(document)
+
+        for paragraph in document["dom"]["paragraphs"]:
+            for altkw in self.alternatives_list:
+                for kw in altkw["forms"]:
+                    if kw in paragraph["text"]:
+                        result.add_paragraph_catch(document, paragraph, self._catch(altkw["label"], kw))
+
+        return result.close()   # returns None if nothing caught
+
+
+class QueryRegex():
+    def __init__(self, regex, group_map=None):
+        self.regex = regex
+        self.group_map = group_map
+
+    def _catch(self, label, group, form):
+        # label group form
+        return( (label, group, form) )
+
+    def search(self, document):
+        result = SearchResult(document)
+
+        for paragraph in document["dom"]["paragraphs"]:
+            for m in re.finditer(self.regex, paragraph["text"]):
+                if self.group_map == None:
+                    result.add_paragraph_catch(document, paragraph, self._catch(m.group(0), '*', m.group(0)))
+                else:
+                    for k in self.group_map:
+                        result.add_paragraph_catch(document, paragraph, self._catch(m.group(k), self.group_map[k], m.group(k)))
+
+        return result.close()   # returns None if nothing caught
+
+
+
+###########
+# DISPLAY #
+###########
 
 def transform_excerpt(excerpt, transform_map):
     _output = excerpt
@@ -160,6 +364,38 @@ def transform_excerpt(excerpt, transform_map):
 
     return(_output)
 
+
+class MarkdownFormater():
+    def __init__(self):
+        self.output = []
+        self.line_delimiter = ""
+
+    def occurence_table(self, occurence_list, title):
+        self.output.append("## {}\n\n".format(title))
+        self.output.append("| occ | expression |\n| :-- | :-- |\n")
+        for o in occurence_list:
+            # occ, list of references, catch
+            self.output.append("| {occ} | {exp} | \n".format(  occ=o[1],
+                                                                exp=o[0].replace("\n","")
+                                                            ))
+        self.output.append("\n")
+
+    def catches_table(self, catches_array, title):
+        self.output.append("## {}\n\n".format(title))
+        self.output.append("| occ | expression | refs |\n| :-- | :-- | :-- |\n")
+        for o in catches_array:
+            # occ, list of references, catch
+            self.output.append("| {occ} | {exp} | {refs} |\n".format(  occ=o[0],
+                                                                       refs=", ".join(o[1]),
+                                                                       exp=o[2][2].replace("\n","")
+                                                                    ))
+        self.output.append("\n")
+
+    def generate(self):
+        return(self.line_delimiter.join(self.output))
+
+
+
 def result_markdown_formater(query, results):
     _output = []
 
@@ -167,28 +403,22 @@ def result_markdown_formater(query, results):
     if "regex" in query:
         if query.get("group_map", None) == None:
             _output.append("## All occurences\n\n")
-            _output.append("| occ | expression |\n| :-- | :-- |\n")
-            _catchall = []
-            for result in results:
-                _catchall.extend([c['*'] for c in result["catch"]])
-            _catchall_counter = Counter(_catchall)
+            _output.append("| occ | expression | refs |\n| :-- | :-- | :-- |\n")
+            _catchall_counter = compute_array_occurences(results, '*')
 
-            for c in _catchall_counter.most_common():
-                _output.append("| {1} | {0} |\n".format(c[0].replace("\n",""), c[1]))
+            for ctuple in _catchall_counter:
+                _output.append("| {0} | {2} | {1} |\n".format(c[0], ", ".join(c[1]), c[2].replace("\n","")))
             _output.append("\n\n")
 
         else:
             for k in query.get("group_map"):
                 _groupkey = query["group_map"][k]
                 _output.append("## All occurences of group {}\n\n".format(_groupkey))
-                _output.append("| occ | expression |\n| :-- | :-- |\n")
-                _catchall = []
-                for result in results:
-                    _catchall.extend([c.get(_groupkey,"_") for c in result["catch"]])
-                _catchall_counter = Counter(_catchall)
+                _output.append("| occ | expression | refs |\n| :-- | :-- | :-- |\n")
 
-                for c in _catchall_counter.most_common():
-                    _output.append("| {1} | {0} |\n".format(c[0].replace("\n",""), c[1]))
+                _catchall_counter = compute_array_occurences(results, _groupkey)
+                for c in _catchall_counter:
+                    _output.append("| {0} | {2} | {1} |\n".format(c[0], ", ".join(c[1]), c[2].replace("\n","")))
 
                 _output.append("\n\n")
 
@@ -262,35 +492,6 @@ def result_markdown_formater(query, results):
     return("".join(_output))
 
 
-def collect_matika_cooccurences_counter(results):
-    counts = Counter()
-
-    for result in results:
-        for paragraph_catch in result["paragraphs"]:
-            for k1 in paragraph_catch["catch"]:
-                for k2 in paragraph_catch["catch"]:
-                    if k2["label"] == k1["label"]:
-                        continue
-                    counts.update([(k1["label"],k2["label"]), (k2["label"],k1["label"])])
-    return(counts)
-
-def collect_matika_cooccurences_pivot(results, transform=None, normalize=None):
-    cooccurences = collect_matika_cooccurences_counter(results)
-
-    if transform == None:
-        df = pd.DataFrame.from_records([(key[0],key[1],cooccurences[key]) for key in cooccurences],
-                                        columns=["word1", "word2", "score"])
-    else:
-        df = pd.DataFrame.from_records([(key[0],key[1],transform(cooccurences[key])) for key in cooccurences],
-                                        columns=["word1", "word2", "score"])
-
-    if normalize == "minmax":
-        df['score'] = (df['score'] - df['score'].min()) / (df['score'].max() - df['score'].min())
-
-    return (df.pivot(index="word1",
-                     columns="word2",
-                     values="score")
-                     .fillna(0))
 
 if __name__ == '__main__':
     _rootdir = "/home/datayana/suttacentral-data/text/pi/su"
