@@ -11,8 +11,33 @@ import re
 # TEXT PROCESSING #
 ###################
 
+#numeric = "0123456789"
+#alpha = "abcdefghijklmnoprstuvwxy"
+#alphapali = "ñāīūḍḷṃṅṇṭ"
+#nonspaces = "\xa0\u200b\u200d"
+#punctuation = "()*,-.:;?[]_–—‘’“”†…"
+
+
+
 def text_normalize(input_text):
-    return(input_text.lower().replace("\xad", ""))
+    charmap = dict([
+        ("\xa0",""),
+        ("\xad",""),
+        ("\u200b",""),
+        ("\u200d","")
+        #("–","-"),
+        #("—","-"),
+        #("‘","'"),
+        #("’","'"),
+        #("”","\""),
+        #("“","\""),
+        #("†","_")
+    ])
+    ret_text = input_text.lower()
+    for c in charmap.keys():
+        ret_text = ret_text.replace(c, charmap[c])
+    return(ret_text)
+    #return(input_text.lower().replace("\xad", ""))
 
 
 def parse_html_dom(input_html_content):
@@ -320,7 +345,7 @@ class QueryAlternatives():
         self.alternatives_list = []
 
     def add_alternative(self, label, forms):
-        self.alternatives_list.append( {"label": label, "forms": forms} )
+        self.alternatives_list.append( {"label": text_normalize(label), "forms": [text_normalize(form) for form in forms]} )
 
     def _catch(self, label, form):
         # label group form
