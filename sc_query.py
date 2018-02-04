@@ -182,17 +182,25 @@ class SearchResultList():
         return(occurences)
 
 
-    def get_all_document_catches(self, group='*', discard_forms=False):
+    def get_all_document_catches(self, group='*', discard_forms=False, postprocess=None):
         occurences = {}
 
         for result in self.results:
             for c in result.document_catches:
                 # label group form
                 if c[1] == group:
-                    if discard_forms:
-                        _c = (c[0], c[1], None)
+                    if postprocess != None:
+                        catch_label = postprocess(c[0])
+                        catch_form = postprocess(c[2])
                     else:
-                        _c = c
+                        catch_label = c[0]
+                        catch_form = c[2]
+
+                    if discard_forms:
+                        _c = (catch_label, c[1], None)
+                    else:
+                        _c = (catch_label, c[1], catch_form)
+
                     if _c in occurences:
                         occurences[_c].append(result.id)
                     else:
@@ -205,6 +213,7 @@ class SearchResultList():
             )
 
         return(sorted(occurence_list, key=lambda x : -x[0]))
+
 
     def get_all_paragraph_catches(self, group='*', discard_forms=False):
         occurences = {}
@@ -357,156 +366,169 @@ class QueryRegex():
 # DISPLAY #
 ###########
 
-def transform_excerpt(excerpt, transform_map):
-    _output = excerpt
-    for k in transform_map:
-        _output = _output.replace(k, transform_map[k])
-
-    return(_output)
 
 
 class MarkdownFormater():
     def __init__(self):
         self.output = []
         self.line_delimiter = ""
+        self._lineclr = "\n"
+        self.config_refpointtosection = True
 
-    def occurence_table(self, occurence_list, title):
-        self.output.append("## {}\n\n".format(title))
-        self.output.append("| occ | expression |\n| :-- | :-- |\n")
+    ########################
+    # LOW LEVEL TRANSFORMS #
+    ########################
+
+    def _transform_excerpt(self, excerpt, transform_map):
+        _output = excerpt
+        for k in transform_map:
+            _output = _output.replace(k, transform_map[k])
+
+        return _output
+
+    def _sutta_reference(self, sutta_id):
+        return sutta_id
+
+    def _sutta_excerpt(self, result):
+        pass
+
+    def _reduce_and_sort(Self, ref_list):
+        return sorted(list(set(ref_list)))
+
+    def _reference_list(self, ref_list):
+        if self.config_refpointtosection:
+            return ", ".join(map(self._sutta_reference, map(lambda x : "[{0}](#{0})".format(x), ref_list)))
+        else:
+            return ", ".join(map(self._sutta_reference, ref_list))
+
+
+    #####################
+    # DOC LEVEL OUTPUTS #
+    #####################
+
+    def document_title(self, title):
+        self.output.append("# {0}{1}{1}".format(title, self._lineclr))
+
+    def section_open(self, title, level=1, section_id=None):
+        if section_id:
+            self.output.append("<a name=\"{}\"></a>{}".format(section_id, self._lineclr))
+        self.output.append("{0} {1}{2}{2}".format("#"*level, title, self._lineclr))
+
+    def section_close(self):
+        pass
+
+    def table_open(self, column_names):
+        self.output.append("| {0} |{1}".format(" | ".join(column_names), self._lineclr))
+        self.output.append("| {0} |{1}".format(" | ".join(map(lambda x : ":--", column_names)), self._lineclr))
+
+    def table_row(self, values):
+        self.output.append("| {0} |{1}".format(" | ".join(map(str, values)), self._lineclr))
+
+    def table_close(self):
+        self.output.append("\n")
+
+    def sutta_open(self, sutta_title, sutta_id, sc_link):
+        self.section_open(
+            "{sid} - {title} \\[[sc]({url})\\]".format(sid=sutta_id.upper(), title=sutta_title, url=sc_link),
+            level=4,
+            section_id=sutta_id
+        )
+
+    def sutta_close(self):
+        self.output.append(self._lineclr)
+
+    def sutta_paragraph_open(self, paragraph_ids):
+        self.output.append("**Paragraph** {}{}".format(paragraph_ids, self._lineclr))
+
+    def sutta_paragraph_excerpt(self, text, catches):
+        excerpt_transform_map = dict(
+            # c = (label, group, form)
+            [
+                (c[2],"**{}**".format(c[2]))
+                for c in catches if c[1] == '*'
+            ]
+        )
+        self.output.append("> {}{}".format(self._transform_excerpt(text, excerpt_transform_map), self._lineclr))
+
+    def sutta_paragraph_close(self):
+        self.output.append(self._lineclr)
+
+    ########################
+    # HIGH LEVEL FUNCTIONS #
+    ########################
+
+    def figure(self, image_path, desc=None):
+        self.output.append("![{desc}]({path}){clr}{clr}".format(
+            desc = desc if desc else "",
+            path = image_path,
+            clr = self._lineclr
+        ))
+
+    def query_details(self, query):
+        # TODO
+        pass
+
+    def occurence_table(self, occurence_list, title=None):
+        if title:
+            self.section_open(title, 2)
+
+        self.table_open( ["occ", "expression"] )
+
         for o in occurence_list:
             # occ, list of references, catch
-            self.output.append("| {occ} | {exp} | \n".format(  occ=o[1],
-                                                                exp=o[0].replace("\n","")
-                                                            ))
-        self.output.append("\n")
+            self.table_row([
+                o[1],
+                o[0].replace(self._lineclr,"")
+            ])
 
-    def catches_table(self, catches_array, title):
-        self.output.append("## {}\n\n".format(title))
-        self.output.append("| occ | expression | refs |\n| :-- | :-- | :-- |\n")
+        self.table_close()
+
+    def catches_table(self, catches_array, title=None):
+        if title:
+            self.section_open(title, 2)
+
+        self.table_open( ["occ", "expression", "refs"] )
+
         for o in catches_array:
             # occ, list of references, catch
-            self.output.append("| {occ} | {exp} | {refs} |\n".format(  occ=o[0],
-                                                                       refs=", ".join(o[1]),
-                                                                       exp=o[2][2].replace("\n","")
-                                                                    ))
-        self.output.append("\n")
+            self.table_row((
+                                    o[0],
+                                    o[2][2].replace("\n",""),
+                                    self._reference_list(self._reduce_and_sort(o[1]))
+                            ))
+
+        self.table_close()
+
+    def results_list(self, results):
+        for result in results.iterate():
+            self.sutta_open(
+                result.doc_title,
+                result.id,
+                "https://suttacentral.net/pi/{}/".format(result.id)  # sc link
+            )
+
+            for paragraph in result.paragraph_results:
+                # todo: id
+                self.sutta_paragraph_open(paragraph_ids=paragraph["ids"])
+                self.sutta_paragraph_excerpt(paragraph["excerpt"], paragraph["catches"])
+                self.sutta_paragraph_close()
+
+            self.sutta_close()
+
+    ##########
+    # OUTPUT #
+    ##########
+
+    def generate_and_write(self, filepath):
+        with open(filepath, "w") as ofile:
+            ofile.write(self.generate())
 
     def generate(self):
         return(self.line_delimiter.join(self.output))
 
 
 
-def result_markdown_formater(query, results):
-    _output = []
-
-
-    if "regex" in query:
-        if query.get("group_map", None) == None:
-            _output.append("## All occurences\n\n")
-            _output.append("| occ | expression | refs |\n| :-- | :-- | :-- |\n")
-            _catchall_counter = compute_array_occurences(results, '*')
-
-            for ctuple in _catchall_counter:
-                _output.append("| {0} | {2} | {1} |\n".format(c[0], ", ".join(c[1]), c[2].replace("\n","")))
-            _output.append("\n\n")
-
-        else:
-            for k in query.get("group_map"):
-                _groupkey = query["group_map"][k]
-                _output.append("## All occurences of group {}\n\n".format(_groupkey))
-                _output.append("| occ | expression | refs |\n| :-- | :-- | :-- |\n")
-
-                _catchall_counter = compute_array_occurences(results, _groupkey)
-                for c in _catchall_counter:
-                    _output.append("| {0} | {2} | {1} |\n".format(c[0], ", ".join(c[1]), c[2].replace("\n","")))
-
-                _output.append("\n\n")
-
-
-    for result in results:
-        _output.append("#### {doc_id} - {title} [[link]({url})]\n".format(
-                            doc_id = result.get("doc_id","noid").upper(),
-                            title = result.get("doc_title","no title in result"),
-                            url = "https://suttacentral.net/pi/{}/".format(result["doc_id"])
-                        ))
-        _output.append("\n")
-
-        if "keyword_list" in query:
-            _output.append("Matches(d={},o={}): ".format(len(set(result["catch"])),
-                                                     len(result["catch"])))
-
-            _suboutput = []
-            for kw in query["keyword_list"]:
-                if kw in result["catch"]:
-                    _suboutput.append("[{}]".format(kw))
-                else:
-                    _suboutput.append("~~[{}]~~".format(kw))
-            _output.append(", ".join(_suboutput))
-
-        elif "alternatives_list" in query:
-            _output.append("Matches(d={},o={}): ".format(len(set([entry["label"] for entry in result["catch"]])),
-                                                     len(result["catch"])))
-            _suboutput = []
-            _result_labels = [alt["label"] for alt in result["catch"]]
-            for altkw in query["alternatives_list"]:
-                if altkw["label"] in _result_labels:
-                    _suboutput.append("[{}]".format(altkw["label"]))
-                else:
-                    _suboutput.append("~~[{}]~~".format(altkw["label"]))
-
-            _output.append(", ".join(_suboutput))
-
-        elif "regex" in query:
-            _output.append("Matches(o={}): \n".format(len(result["catch"])))
-            _catches = Counter([c['*'] for c in result["catch"]])
-            for c in _catches:
-                _output.append("> [o={1}] {0}\n\n".format(c.replace("\n",""), _catches[c]))
-
-        _output.append("\n")
-        _output.append("\n")
-
-        for paragraph in result["paragraphs"]:
-            # todo: id
-            _output.append("**Paragraph {}**\n> ".format(paragraph["ids"]))
-            if "alternatives_list" in query:
-                excerpt_transform_map = dict(
-                    [(c['form'],"**{}**".format(c['form'])) for c in paragraph['catch']]
-                )
-            elif "regex" in query:
-                excerpt_transform_map = dict(
-                    [
-                        (c['*'],"**{}**".format(c['*']))
-                        for c in paragraph['catch']
-                    ]
-                )
-            else:
-                excerpt_transform_map = dict(
-                    [(c,"**{}**".format(c)) for c in paragraph['catch']]
-                )
-
-            _output.append(transform_excerpt(paragraph["excerpt"], excerpt_transform_map))
-            _output.append("\n\n")
-
-        _output.append("\n")
-
-    return("".join(_output))
-
-
 
 if __name__ == '__main__':
-    _rootdir = "/home/datayana/suttacentral-data/text/pi/su"
-
-    _docs = load_documents(_rootdir)
-    print("loaded {} files, total bytes {}".format(len(_docs), sum([len(entry["html_content"]) for entry in _docs])))
-
-    _query = query_keywordlist([
-                "anussavena", "paramparāya", "itikirāya", "piṭaka­sam­padā­nena",
-                "takkahetu", "nayahetu", "ākāra­pari­vitak­kena", "diṭṭhi­nij­jhā­nak­khan­tiyā",
-                "bhabbarūpatāya", "samaṇo no garū"
-        ])
-
-    _global_results = search_documentlist(_query, _docs, sort="score")
-    print("Results found: {}".format(len(_global_results)))
-
-    with open("results-kwlist.md", "w") as ofile:
-        ofile.write(result_markdown_formater(_query, _global_results))
+    # TODO
+    pass
